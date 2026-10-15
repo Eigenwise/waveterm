@@ -875,6 +875,46 @@ Variables set with these commands persist across sessions and can be used to sto
 
 ---
 
+## tab
+
+Manage tabs in an existing workspace.
+
+### create
+
+Create and activate a genuinely new tab using Wave's normal new-tab layout (a local terminal).
+
+```sh
+wsh tab create [name] [--workspace <id>]
+```
+
+Prints only the new tab's UUID, followed by a newline, on success. If `name` is omitted, Wave assigns its usual `T1`, `T2`, etc. name. The terminal uses the normal local connection and initialization settings; it does not inherit the caller's SSH connection or working directory.
+
+Flags:
+
+- `--workspace <id>` - target workspace UUID (defaults to `WAVETERM_WORKSPACEID`)
+
+The workspace must already belong to an existing Wave window, including an unnamed workspace. Missing, unknown, malformed, or unattached workspace IDs fail without creating a tab. The command never chooses another workspace or creates a window. It requests activation of the new tab through normal tab switching in the target window, without separately requesting OS window focus. The global `--block` flag does not select the workspace.
+
+Examples:
+
+```sh
+# Create a tab in the current workspace
+wsh tab create
+
+# Give the new tab a name
+wsh tab create "Build logs"
+
+# Target a specific workspace instead of the caller's workspace
+wsh tab create --workspace 12d0c067-378e-454c-872e-77a314248114 "Build logs"
+
+# Capture the new tab ID in a POSIX shell
+new_tab_id=$(wsh tab create "Tests")
+```
+
+`wsh tab list` and `wsh tab move` provide listing and reordering; see their command help for details. To open another pane in the current tab rather than create a tab, use `wsh term`.
+
+---
+
 ## termscrollback
 
 Get the terminal scrollback from a terminal block. This is useful for capturing terminal output for processing or archiving.

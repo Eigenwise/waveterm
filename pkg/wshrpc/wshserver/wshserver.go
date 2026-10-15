@@ -1,4 +1,4 @@
-// Copyright 2025, Command Line Inc.
+// Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 package wshserver
@@ -942,6 +942,29 @@ func (ws *WshServer) BlocksListCommand(
 		}
 	}
 	return results, nil
+}
+
+func (ws *WshServer) CreateTabCommand(ctx context.Context, workspaceId string, tabName string) (string, error) {
+	if workspaceId == "" {
+		return "", fmt.Errorf("workspace id is required")
+	}
+	ctx = waveobj.ContextWithUpdates(ctx)
+	tabId, err := wstore.WithTxRtn(ctx, func(tx *wstore.TxWrap) (string, error) {
+		windowId, err := wstore.DBFindWindowForWorkspaceId(tx.Context(), workspaceId)
+		if err != nil {
+			return "", fmt.Errorf("finding workspace window: %w", err)
+		}
+		if windowId == "" {
+			return "", fmt.Errorf("no window found for workspace %q", workspaceId)
+		}
+		return wcore.CreateTab(tx.Context(), workspaceId, tabName, true, false)
+	})
+	if err != nil {
+		return "", err
+	}
+	wps.Broker.SendUpdateEvents(waveobj.ContextGetUpdatesRtn(ctx))
+	wcore.SendActiveTabUpdate(ctx, workspaceId, tabId)
+	return tabId, nil
 }
 
 func (ws *WshServer) WorkspaceListCommand(ctx context.Context) ([]wshrpc.WorkspaceInfoData, error) {

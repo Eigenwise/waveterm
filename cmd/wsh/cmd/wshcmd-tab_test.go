@@ -4,9 +4,175 @@
 package cmd
 
 import (
+	"bytes"
+	"context"
+	"fmt"
 	"reflect"
+	"strings"
+	"sync"
 	"testing"
+
+	"github.com/wavetermdev/waveterm/pkg/waveobj"
+	"github.com/wavetermdev/waveterm/pkg/wshrpc"
+	"github.com/wavetermdev/waveterm/pkg/wshutil"
 )
+
+type tabTestServer struct {
+	workspaceId string
+	tabName     string
+	createCalls int
+	createErr   error
+	blockData   *wshrpc.CommandCreateBlockData
+}
+
+func (*tabTestServer) WshServerImpl() {}
+
+func (s *tabTestServer) CreateTabCommand(ctx context.Context, workspaceId string, tabName string) (string, error) {
+	s.workspaceId, s.tabName = workspaceId, tabName
+	s.createCalls++
+	return "new-tab-id", s.createErr
+}
+
+func (s *tabTestServer) CreateBlockCommand(ctx context.Context, data wshrpc.CommandCreateBlockData) (waveobj.ORef, error) {
+	s.blockData = &data
+	return waveobj.MakeORef(waveobj.OType_Block, "b29d96a6-2c12-4f47-9a50-9bfd70dc095b"), nil
+}
+
+func (*tabTestServer) WshActivityCommand(ctx context.Context, data map[string]int) error {
+	return nil
+}
+
+func setupTabTestRpc(t *testing.T, impl *tabTestServer) {
+	t.Helper()
+	client := wshutil.MakeWshRpc(wshrpc.RpcContext{}, nil, "tab-test-client")
+	server := wshutil.MakeWshRpc(wshrpc.RpcContext{}, impl, "tab-test-server")
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	for _, pair := range [][2]*wshutil.WshRpc{{client, server}, {server, client}} {
+		wg.Add(1)
+		go func(src, dst *wshutil.WshRpc) {
+			defer wg.Done()
+			for {
+				select {
+				case <-done:
+					return
+				case msg := <-src.OutputCh:
+					if !dst.SendRpcMessage(msg, 0, "tab-test") {
+						t.Error("test RPC input channel full")
+					}
+				}
+			}
+		}(pair[0], pair[1])
+	}
+	oldClient := RpcClient
+	RpcClient = client
+	t.Cleanup(func() {
+		RpcClient = oldClient
+		close(done)
+		wg.Wait()
+		close(client.InputCh)
+		close(server.InputCh)
+	})
+}
+
+func TestTabCreate(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		args      []string
+		env       string
+		workspace string
+		tabName   string
+		wantErr   string
+		rpcErr    error
+		wantCalls int
+	}{
+		{name: "current workspace", env: "current-ws", workspace: "current-ws", wantCalls: 1},
+		{name: "explicit workspace and name", args: []string{"--workspace", "target-ws", "Build logs"}, env: "current-ws", workspace: "target-ws", tabName: "Build logs", wantCalls: 1},
+		{name: "explicit workspace without environment", args: []string{"--workspace=target-ws"}, workspace: "target-ws", wantCalls: 1},
+		{name: "missing workspace", wantErr: "no workspace id specified"},
+		{name: "too many names", args: []string{"one", "two"}, env: "current-ws", wantErr: "accepts at most 1 arg"},
+		{name: "missing flag value", args: []string{"--workspace"}, wantErr: "flag needs an argument"},
+		{name: "server rejects malformed workspace", args: []string{"--workspace=bad-id"}, workspace: "bad-id", rpcErr: fmt.Errorf("no window found for workspace"), wantCalls: 1, wantErr: "creating tab: no window found for workspace"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("WAVETERM_WORKSPACEID", tt.env)
+			server := &tabTestServer{createErr: tt.rpcErr}
+			setupTabTestRpc(t, server)
+			var out bytes.Buffer
+			oldOut, oldWorkspace, oldPreRun := WrappedStdout, tabWorkspaceId, tabCreateCmd.PreRunE
+			WrappedStdout, tabWorkspaceId = &out, ""
+			tabCreateCmd.PreRunE = nil
+			t.Cleanup(func() {
+				WrappedStdout, tabWorkspaceId, tabCreateCmd.PreRunE = oldOut, oldWorkspace, oldPreRun
+				tabCreateCmd.Flags().Lookup("workspace").Changed = false
+				rootCmd.SetArgs(nil)
+			})
+			rootCmd.SetArgs(append([]string{"tab", "create"}, tt.args...))
+			err := rootCmd.Execute()
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("error = %v, want %q", err, tt.wantErr)
+				}
+				if out.Len() != 0 {
+					t.Fatalf("failed creation printed success: %q", out.String())
+				}
+			} else if err != nil || out.String() != "new-tab-id\n" {
+				t.Fatalf("output = %q, error = %v", out.String(), err)
+			}
+			if server.createCalls != tt.wantCalls || server.workspaceId != tt.workspace || server.tabName != tt.tabName {
+				t.Fatalf("RPC got calls=%d workspace=%q name=%q", server.createCalls, server.workspaceId, server.tabName)
+			}
+		})
+	}
+}
+
+func TestTabCreateHelpWithoutWave(t *testing.T) {
+	t.Setenv(wshutil.WaveJwtTokenVarName, "")
+	var out bytes.Buffer
+	oldOut := rootCmd.OutOrStdout()
+	rootCmd.SetOut(&out)
+	rootCmd.SetArgs([]string{"tab", "create", "--help"})
+	t.Cleanup(func() {
+		rootCmd.SetOut(oldOut)
+		rootCmd.SetArgs(nil)
+		tabCreateCmd.Flags().Set("help", "false")
+		tabCreateCmd.Flags().Lookup("help").Changed = false
+	})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	for _, text := range []string{"create [name]", "--workspace", "WAVETERM_WORKSPACEID", "Does not create a window or request OS window focus"} {
+		if !strings.Contains(out.String(), text) {
+			t.Fatalf("help missing %q: %s", text, out.String())
+		}
+	}
+}
+
+func TestTabCreateRequiresWaveAuthentication(t *testing.T) {
+	t.Setenv(wshutil.WaveJwtTokenVarName, "")
+	if err := tabCreateCmd.PreRunE(tabCreateCmd, nil); err == nil || !strings.Contains(err.Error(), "WAVETERM_JWT not found") {
+		t.Fatalf("expected missing authentication error, got %v", err)
+	}
+}
+
+func TestTermStillCreatesBlockInCurrentTab(t *testing.T) {
+	t.Setenv("WAVETERM_TABID", "existing-tab")
+	server := &tabTestServer{}
+	setupTabTestRpc(t, server)
+	oldOut, oldContext := WrappedStdout, RpcContext
+	WrappedStdout, RpcContext = &bytes.Buffer{}, wshrpc.RpcContext{Conn: "test-connection"}
+	t.Cleanup(func() { WrappedStdout, RpcContext = oldOut, oldContext })
+	if err := termRun(termCmd, nil); err != nil {
+		t.Fatal(err)
+	}
+	if server.createCalls != 0 || server.blockData == nil || server.blockData.TabId != "existing-tab" {
+		t.Fatalf("term must create a block in the existing tab, got %+v", server)
+	}
+	meta := server.blockData.BlockDef.Meta
+	if meta.GetString(waveobj.MetaKey_View, "") != "term" || meta.GetString(waveobj.MetaKey_Controller, "") != "shell" || meta.GetString(waveobj.MetaKey_Connection, "") != "test-connection" {
+		t.Fatalf("terminal metadata changed: %+v", meta)
+	}
+}
 
 func TestReorderTabIds(t *testing.T) {
 	tests := []struct {

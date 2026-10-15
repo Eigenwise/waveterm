@@ -145,6 +145,7 @@ type WshRpcInterface interface {
 	SetSecretsCommand(ctx context.Context, secrets map[string]*string) error
 	GetSecretsLinuxStorageBackendCommand(ctx context.Context) (string, error)
 
+	CreateTabCommand(ctx context.Context, workspaceId string, tabName string) (string, error)
 	WorkspaceListCommand(ctx context.Context) ([]WorkspaceInfoData, error)
 	// WorkspaceListAllCommand is the CLI-only counterpart to
 	// WorkspaceListCommand: it includes unsaved (scratch) workspaces too.
@@ -347,7 +348,6 @@ type CommandEventReadHistoryData struct {
 	Scope    string `json:"scope"`
 	MaxItems int    `json:"maxitems"`
 }
-
 
 type CpuDataRequest struct {
 	Id    string `json:"id"`

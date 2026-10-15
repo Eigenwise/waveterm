@@ -18,7 +18,7 @@ import (
 var tabCommand = &cobra.Command{
 	Use:   "tab",
 	Short: "Manage tabs",
-	Long:  "Commands for listing and reordering tabs.",
+	Long:  "Commands for creating, listing, and reordering tabs.",
 }
 
 var tabListCmd = &cobra.Command{
@@ -28,6 +28,17 @@ var tabListCmd = &cobra.Command{
 	Long: `List tabs with their ids and names, in their current order.
 Defaults to the current workspace (from WAVETERM_WORKSPACEID).`,
 	RunE:    tabListRun,
+	PreRunE: preRunSetupRpcClient,
+}
+
+var tabCreateCmd = &cobra.Command{
+	Use:   "create [name]",
+	Short: "Create a new tab in a workspace",
+	Long: `Create and activate a new tab with Wave's default terminal layout.
+Defaults to the current workspace (from WAVETERM_WORKSPACEID).
+Prints the new tab id. Does not create a window or request OS window focus.`,
+	Args:    cobra.MaximumNArgs(1),
+	RunE:    tabCreateRun,
 	PreRunE: preRunSetupRpcClient,
 }
 
@@ -49,6 +60,9 @@ var (
 )
 
 func init() {
+	tabCreateCmd.Flags().StringVar(&tabWorkspaceId, "workspace", "", "workspace id (defaults to WAVETERM_WORKSPACEID)")
+	tabCommand.AddCommand(tabCreateCmd)
+
 	tabListCmd.Flags().StringVar(&tabWorkspaceId, "workspace", "", "workspace id (defaults to WAVETERM_WORKSPACEID)")
 	tabListCmd.Flags().BoolVar(&tabListJSON, "json", false, "output as JSON")
 	tabCommand.AddCommand(tabListCmd)
@@ -87,6 +101,27 @@ func getWorkspaceForId(wsId string, workspaces []wshrpc.WorkspaceInfoData) (*wav
 		}
 	}
 	return nil, fmt.Errorf("workspace %q not found", wsId)
+}
+
+func tabCreateRun(cmd *cobra.Command, args []string) (rtnErr error) {
+	defer func() {
+		sendActivity("tab-create", rtnErr == nil)
+	}()
+
+	wsId, err := resolveWorkspaceId()
+	if err != nil {
+		return err
+	}
+	tabName := ""
+	if len(args) > 0 {
+		tabName = args[0]
+	}
+	tabId, err := wshclient.CreateTabCommand(RpcClient, wsId, tabName, &wshrpc.RpcOpts{Timeout: 5000})
+	if err != nil {
+		return fmt.Errorf("creating tab: %w", err)
+	}
+	WriteStdout("%s\n", tabId)
+	return nil
 }
 
 func tabListRun(cmd *cobra.Command, args []string) (rtnErr error) {
