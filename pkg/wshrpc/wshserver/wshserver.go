@@ -387,6 +387,14 @@ func (ws *WshServer) ControllerDestroyCommand(ctx context.Context, blockId strin
 }
 
 func (ws *WshServer) ControllerResyncCommand(ctx context.Context, data wshrpc.CommandControllerResyncData) error {
+	if data.TabId == "" {
+		// CLI callers outside the block's tab know only the block id.
+		tabId, err := wstore.DBFindTabForBlockId(ctx, data.BlockId)
+		if err != nil || tabId == "" {
+			return fmt.Errorf("cannot find tab for block %s: %v", data.BlockId, err)
+		}
+		data.TabId = tabId
+	}
 	ctx = genconn.ContextWithConnData(ctx, data.BlockId)
 	ctx = termCtxWithLogBlockId(ctx, data.BlockId)
 	return blockcontroller.ResyncController(ctx, data.TabId, data.BlockId, data.RtOpts, data.ForceRestart)

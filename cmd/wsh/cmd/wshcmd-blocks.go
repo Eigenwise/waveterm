@@ -6,6 +6,7 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"text/tabwriter"
@@ -68,9 +69,37 @@ Examples:
 	SilenceUsage: true,
 }
 
+// blocksRestartCmd represents the 'blocks restart' command
+var blocksRestartCmd = &cobra.Command{
+	Use:   "restart [-b {blockid|blocknum|this}] [--tab <tabid>]",
+	Short: "Restart a block's shell or command",
+	Long: `Stop a block's controller (its shell or command) and start it again, like
+"Force Restart Controller" in the block header menu. The block's initialization
+script or command runs again.
+
+A full block id works from any tab; blocknum/this resolve within the current
+tab. --tab is only needed for a block outside the current tab on a Wave backend
+older than this command, which cannot resolve the block's tab itself.
+
+Examples:
+  # Restart the current block
+  wsh blocks restart
+
+  # Restart a block in another tab by id
+  wsh blocks restart -b 62289c70-c9fa-4f90-bd20-de67bf13c493`,
+	Args:         cobra.NoArgs,
+	RunE:         blocksRestartRun,
+	PreRunE:      preRunSetupRpcClient,
+	SilenceUsage: true,
+}
+
+var blocksRestartTabId string
+
 // init registers the blocks commands with the root command
 // It configures all the flags and command options
 func init() {
+	blocksRestartCmd.Flags().StringVar(&blocksRestartTabId, "tab", "", "tab id of the block (defaults to WAVETERM_TABID for blocknum/this, otherwise resolved by Wave)")
+
 	blocksListCmd.Flags().StringVar(&blocksWindowId, "window", "", "restrict to window id")
 	blocksListCmd.Flags().StringVar(&blocksWorkspaceId, "workspace", "", "restrict to workspace id")
 	blocksListCmd.Flags().StringVar(&blocksTabId, "tab", "", "restrict to specific tab id")
@@ -80,7 +109,7 @@ func init() {
 
 	for _, cmd := range rootCmd.Commands() {
 		if cmd.Use == "blocks" {
-			cmd.AddCommand(blocksListCmd)
+			cmd.AddCommand(blocksListCmd, blocksRestartCmd)
 			return
 		}
 	}
@@ -91,8 +120,38 @@ func init() {
 		Long:    "Commands for working with blocks",
 	}
 
-	blocksCmd.AddCommand(blocksListCmd)
+	blocksCmd.AddCommand(blocksListCmd, blocksRestartCmd)
 	rootCmd.AddCommand(blocksCmd)
+}
+
+// blocksRestartRun implements the 'blocks restart' command
+func blocksRestartRun(cmd *cobra.Command, args []string) (rtnErr error) {
+	defer func() {
+		sendActivity("blocks-restart", rtnErr == nil)
+	}()
+
+	fullORef, err := resolveBlockArg()
+	if err != nil {
+		return err
+	}
+	if fullORef.OType != waveobj.OType_Block {
+		return fmt.Errorf("not a block: %s", fullORef)
+	}
+	tabId := blocksRestartTabId
+	if tabId == "" && fullORef.OID == os.Getenv("WAVETERM_BLOCKID") {
+		// the caller's own block lives in the caller's tab; any other block's tab is resolved by Wave
+		tabId = os.Getenv("WAVETERM_TABID")
+	}
+	err = wshclient.ControllerResyncCommand(RpcClient, wshrpc.CommandControllerResyncData{
+		TabId:        tabId,
+		BlockId:      fullORef.OID,
+		ForceRestart: true,
+	}, &wshrpc.RpcOpts{Timeout: 5000})
+	if err != nil {
+		return fmt.Errorf("restarting block: %w", err)
+	}
+	WriteStdout("restarted block %s\n", fullORef.OID)
+	return nil
 }
 
 // blocksListRun implements the 'blocks list' command

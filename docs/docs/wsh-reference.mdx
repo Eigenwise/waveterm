@@ -1010,6 +1010,22 @@ wsh blocks list --workspace=12d0c067-378e-454c-872e-77a314248114
 wsh blocks list --json
 ```
 
+### restart
+
+```sh
+wsh blocks restart [-b {blockid|blocknum|this}] [--tab <tabid>]
+```
+
+Stop a block's shell or command and start it again, like **Force Restart Controller** in the block header menu. The block's initialization script or command runs again. A full block id works from any tab; `blocknum`/`this` resolve within the current tab. `--tab` is only needed for a block in another tab on a Wave backend older than this command.
+
+```sh
+# Restart the current block
+wsh blocks restart
+
+# Restart a block in another tab
+wsh blocks restart -b 62289c70-c9fa-4f90-bd20-de67bf13c493
+```
+
 ---
 
 ## secret
