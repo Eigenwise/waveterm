@@ -1010,7 +1010,6 @@ wsh blocks list --workspace=12d0c067-378e-454c-872e-77a314248114
 wsh blocks list --json
 ```
 
-
 ---
 
 ## secret
@@ -1120,4 +1119,76 @@ The secrets UI provides a convenient visual way to browse, add, edit, and delete
 :::tip
 Use secrets in your scripts to avoid hardcoding sensitive values. Secrets work across remote machines - store an API key locally with `wsh secret set`, then access it from any SSH or WSL connection with `wsh secret get`. The secret is securely retrieved from your local machine without needing to duplicate it on remote systems.
 :::
+
+---
+
+## tab
+
+Manage the tabs of a workspace from scripts and agents, without touching the UI. Tab ids come from `wsh tab list` or `WAVETERM_TABID`; workspace ids come from `wsh workspace list` or `WAVETERM_WORKSPACEID`.
+
+### tab list
+
+```sh
+wsh tab list [--workspace <id>] [--json]
+```
+
+List the tabs of a workspace (default: the current workspace) with their index, id and name.
+
+### tab create
+
+```sh
+wsh tab create [-w <workspaceid>] [-n <name>] [--no-activate] [--meta key=value]...
+```
+
+Create a new tab with Wave's default terminal layout and print its id to stdout. The workspace defaults to `WAVETERM_WORKSPACEID`, or to the workspace of the calling block when that is unset. The new tab becomes the active tab of its workspace unless `--no-activate` is given. No window is created and no OS window focus is requested.
+
+Flags:
+
+- `-w, --workspace <id>` - target workspace id
+- `-n, --name <name>` - tab name (defaults to the next auto-generated name, e.g. `T3`)
+- `--no-activate` - create the tab in the background
+- `--meta key=value` - set tab metadata, repeatable; same value syntax as `wsh setmeta`
+
+```sh
+# Create a tab in the current workspace and switch to it
+wsh tab create
+
+# Create a named tab and capture its id
+tabid=$(wsh tab create --name "build-output")
+
+# Create a background tab in another workspace, with a background color
+wsh tab create -w 9b1d... -n "logs" --no-activate --meta "bg:color=#223344"
+```
+
+### tab rename
+
+```sh
+wsh tab rename [-t <tabid>] <name>
+```
+
+Rename a tab. Defaults to the current tab (`WAVETERM_TABID`). Only the name changes; the tab is not activated.
+
+```sh
+wsh tab rename "agent-1"
+wsh tab rename --tab 8f4a... "build-output"
+```
+
+### tab focus
+
+```sh
+wsh tab focus <tabid>
+```
+
+Make a tab the active tab of its workspace. Unlike `wsh focusblock`, which only works inside the current tab, this works from any tab or workspace.
+
+### tab move
+
+```sh
+wsh tab move <tabid> --index <n> [--workspace <id>]
+```
+
+Move a tab to the given 0-based position in its workspace's tab bar.
+
+---
+
 </PlatformProvider>

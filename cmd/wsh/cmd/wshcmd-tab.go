@@ -18,7 +18,7 @@ import (
 var tabCommand = &cobra.Command{
 	Use:   "tab",
 	Short: "Manage tabs",
-	Long:  "Commands for listing and reordering tabs.",
+	Long:  "Commands for creating, listing, renaming, focusing and reordering tabs.",
 }
 
 var tabListCmd = &cobra.Command{
@@ -28,6 +28,42 @@ var tabListCmd = &cobra.Command{
 	Long: `List tabs with their ids and names, in their current order.
 Defaults to the current workspace (from WAVETERM_WORKSPACEID).`,
 	RunE:    tabListRun,
+	PreRunE: preRunSetupRpcClient,
+}
+
+var tabCreateCmd = &cobra.Command{
+	Use:   "create [--workspace <id>] [--name <name>] [--no-activate] [--meta key=value]...",
+	Short: "Create a new tab in a workspace",
+	Long: `Create a new tab with Wave's default terminal layout and print its id.
+Defaults to the current workspace (from WAVETERM_WORKSPACEID, or the caller's
+block). The new tab becomes the active tab of its workspace unless
+--no-activate is given. No window is created and no OS window focus is requested.
+--meta sets tab metadata using the same key=value syntax as "wsh setmeta".`,
+	Args:                  cobra.NoArgs,
+	RunE:                  tabCreateRun,
+	PreRunE:               preRunSetupRpcClient,
+	DisableFlagsInUseLine: true,
+}
+
+var tabRenameCmd = &cobra.Command{
+	Use:   "rename [--tab <id>] <name>",
+	Short: "Rename a tab",
+	Long: `Rename a tab. Defaults to the current tab (from WAVETERM_TABID).
+Only the tab's name changes; no tab is activated and no focus is requested.`,
+	Args:                  cobra.ExactArgs(1),
+	RunE:                  tabRenameRun,
+	PreRunE:               preRunSetupRpcClient,
+	DisableFlagsInUseLine: true,
+}
+
+var tabFocusCmd = &cobra.Command{
+	Use:   "focus <tabid>",
+	Short: "Activate a tab in its workspace",
+	Long: `Make the given tab the active tab of its workspace, from any tab or
+workspace (unlike "wsh focusblock", which only works within the current tab).
+No OS window focus is requested.`,
+	Args:    cobra.ExactArgs(1),
+	RunE:    tabFocusRun,
 	PreRunE: preRunSetupRpcClient,
 }
 
@@ -43,15 +79,30 @@ the same (no adding or dropping tabs).`,
 }
 
 var (
-	tabWorkspaceId string
-	tabListJSON    bool
-	tabMoveIndex   int
+	tabWorkspaceId      string
+	tabListJSON         bool
+	tabMoveIndex        int
+	tabCreateName       string
+	tabCreateNoActivate bool
+	tabCreateMeta       []string
+	tabRenameTabId      string
 )
 
 func init() {
 	tabListCmd.Flags().StringVar(&tabWorkspaceId, "workspace", "", "workspace id (defaults to WAVETERM_WORKSPACEID)")
 	tabListCmd.Flags().BoolVar(&tabListJSON, "json", false, "output as JSON")
 	tabCommand.AddCommand(tabListCmd)
+
+	tabCreateCmd.Flags().StringVarP(&tabWorkspaceId, "workspace", "w", "", "workspace id (defaults to WAVETERM_WORKSPACEID)")
+	tabCreateCmd.Flags().StringVarP(&tabCreateName, "name", "n", "", "tab name (defaults to the next T<n> name)")
+	tabCreateCmd.Flags().BoolVar(&tabCreateNoActivate, "no-activate", false, "create the tab in the background without activating it")
+	tabCreateCmd.Flags().StringArrayVar(&tabCreateMeta, "meta", nil, "tab metadata key=value (repeatable, same syntax as wsh setmeta)")
+	tabCommand.AddCommand(tabCreateCmd)
+
+	tabRenameCmd.Flags().StringVarP(&tabRenameTabId, "tab", "t", "", "tab id (defaults to WAVETERM_TABID)")
+	tabCommand.AddCommand(tabRenameCmd)
+
+	tabCommand.AddCommand(tabFocusCmd)
 
 	tabMoveCmd.Flags().StringVar(&tabWorkspaceId, "workspace", "", "workspace id (defaults to WAVETERM_WORKSPACEID)")
 	tabMoveCmd.Flags().IntVar(&tabMoveIndex, "index", -1, "0-based target position (required)")
@@ -87,6 +138,71 @@ func getWorkspaceForId(wsId string, workspaces []wshrpc.WorkspaceInfoData) (*wav
 		}
 	}
 	return nil, fmt.Errorf("workspace %q not found", wsId)
+}
+
+func tabCreateRun(cmd *cobra.Command, args []string) (rtnErr error) {
+	defer func() {
+		sendActivity("tab-create", rtnErr == nil)
+	}()
+
+	// An empty workspace id lets the server resolve the caller's workspace from
+	// its block, so a terminal without WAVETERM_WORKSPACEID still works.
+	wsId := tabWorkspaceId
+	if wsId == "" {
+		wsId = os.Getenv("WAVETERM_WORKSPACEID")
+	}
+	meta, err := parseMetaSets(tabCreateMeta)
+	if err != nil {
+		return err
+	}
+	data := wshrpc.CommandCreateTabData{
+		WorkspaceId: wsId,
+		TabName:     tabCreateName,
+		ActivateTab: !tabCreateNoActivate,
+		Meta:        meta,
+	}
+	tabId, err := wshclient.CreateTabCommand(RpcClient, data, &wshrpc.RpcOpts{Timeout: 5000})
+	if err != nil {
+		return fmt.Errorf("creating tab: %w", err)
+	}
+	WriteStdout("%s\n", tabId)
+	return nil
+}
+
+func tabRenameRun(cmd *cobra.Command, args []string) (rtnErr error) {
+	defer func() {
+		sendActivity("tab-rename", rtnErr == nil)
+	}()
+
+	tabId := tabRenameTabId
+	if tabId == "" {
+		tabId = os.Getenv("WAVETERM_TABID")
+	}
+	if tabId == "" {
+		return fmt.Errorf("no tab id specified (use --tab or set WAVETERM_TABID)")
+	}
+	name := args[0]
+	if name == "" {
+		return fmt.Errorf("tab name must not be empty")
+	}
+	err := wshclient.UpdateTabNameCommand(RpcClient, tabId, name, &wshrpc.RpcOpts{Timeout: 2000})
+	if err != nil {
+		return fmt.Errorf("renaming tab: %w", err)
+	}
+	WriteStdout("renamed tab %s to %q\n", tabId, name)
+	return nil
+}
+
+func tabFocusRun(cmd *cobra.Command, args []string) (rtnErr error) {
+	defer func() {
+		sendActivity("tab-focus", rtnErr == nil)
+	}()
+
+	err := wshclient.FocusTabCommand(RpcClient, args[0], &wshrpc.RpcOpts{Timeout: 2000})
+	if err != nil {
+		return fmt.Errorf("focusing tab: %w", err)
+	}
+	return nil
 }
 
 func tabListRun(cmd *cobra.Command, args []string) (rtnErr error) {
